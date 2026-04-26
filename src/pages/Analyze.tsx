@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
 import {
   UploadCloud,
   Terminal,
@@ -8,7 +9,6 @@ import {
   FileText,
   X,
   AlertCircle,
-  ChevronDown,
 } from "lucide-react";
 import { analyzeContractText, analyzeContractFile } from "@/lib/openjustice";
 import type { AnalysisResult } from "@/lib/openjustice";
@@ -96,87 +96,39 @@ function UploadZone({
 // ─── Results ─────────────────────────────────────────────────────────────────
 
 function ResultPanel({ result }: { result: AnalysisResult }) {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="border border-border bg-background p-6 md:p-8 relative"
+      className="border border-border bg-background relative overflow-hidden"
     >
-      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary via-yellow-400 to-red-500" />
+      <div className="h-1 bg-gradient-to-r from-primary via-yellow-400 to-red-500" />
 
-      <h2 className="font-mono text-xl font-bold text-white mb-8 border-b border-border pb-4">
-        <span className="text-primary mr-2">&gt;</span>
-        Avis de droit — analyse du contrat
-      </h2>
+      <div className="p-6 md:p-10">
+        <h2 className="font-mono text-lg font-bold text-white mb-6 flex items-center gap-2">
+          <span className="text-primary">&gt;</span>
+          Avis de droit — analyse du contrat
+        </h2>
 
-      {/* Résultat principal : l'opinion générée par Open Justice */}
-      <div className="font-mono text-sm text-gray-200 leading-relaxed whitespace-pre-wrap mb-8">
-        {result.opinion}
-      </div>
-
-      {/* Clauses structurées si l'API les retourne */}
-      {result.clauses && result.clauses.length > 0 && (
-        <div className="space-y-3 mb-8">
-          {result.clauses.map((c, i) => {
-            const styles: Record<string, string> = {
-              conforme: "bg-primary/10 border-primary/20 text-primary",
-              attention: "bg-yellow-500/10 border-yellow-500/20 text-yellow-500",
-              illegal: "bg-red-500/10 border-red-500/20 text-red-500",
-              info: "bg-blue-500/10 border-blue-500/20 text-blue-400",
-            };
-            const labels: Record<string, string> = {
-              conforme: "CONFORME",
-              attention: "ATTENTION",
-              illegal: "ILLÉGAL",
-              info: "INFO",
-            };
-            return (
-              <div
-                key={i}
-                className={`flex items-start gap-3 p-3 border font-mono text-sm ${styles[c.status] ?? styles.info}`}
-              >
-                <span className="font-bold shrink-0">[ {labels[c.status] ?? c.status.toUpperCase()} ]</span>
-                <span><strong>{c.label}</strong>{c.detail ? ` — ${c.detail}` : ""}</span>
-              </div>
-            );
-          })}
+        <div className="prose prose-invert prose-sm max-w-none
+          prose-headings:font-semibold prose-headings:text-white
+          prose-h2:text-base prose-h2:mt-8 prose-h2:mb-3 prose-h2:border-b prose-h2:border-border prose-h2:pb-2
+          prose-h3:text-sm prose-h3:mt-5 prose-h3:mb-2 prose-h3:text-primary
+          prose-p:text-gray-300 prose-p:leading-relaxed prose-p:my-2
+          prose-li:text-gray-300 prose-li:my-0.5
+          prose-ul:my-2 prose-ol:my-2
+          prose-strong:text-white prose-strong:font-semibold
+          prose-hr:border-border prose-hr:my-6
+          prose-code:text-primary prose-code:bg-primary/10 prose-code:px-1 prose-code:rounded
+        ">
+          <ReactMarkdown>{result.opinion}</ReactMarkdown>
         </div>
-      )}
 
-      {/* Réponse brute dépliable (debug / vérification) */}
-      {result.raw && (
-        <div className="mt-4">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="flex items-center gap-2 text-xs font-mono text-muted-foreground hover:text-white transition-colors"
-          >
-            <ChevronDown
-              size={14}
-              className={`transition-transform ${expanded ? "rotate-180" : ""}`}
-            />
-            {expanded ? "Masquer" : "Voir"} la réponse brute de l'API
-          </button>
-          <AnimatePresence>
-            {expanded && (
-              <motion.pre
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="mt-3 p-4 bg-black/40 border border-border text-xs font-mono text-gray-400 overflow-x-auto"
-              >
-                {JSON.stringify(result.raw, null, 2)}
-              </motion.pre>
-            )}
-          </AnimatePresence>
+        <div className="mt-10 pt-6 border-t border-border text-xs text-muted-foreground font-mono">
+          <span className="text-primary">!</span> Cette analyse est générée à titre indicatif sur la
+          base du droit suisse. Elle ne constitue pas un avis juridique formel. Consultez un avocat
+          pour une validation officielle.
         </div>
-      )}
-
-      <div className="mt-10 pt-6 border-t border-border text-xs text-muted-foreground font-mono">
-        <span className="text-primary">!</span> CLAUSE DE NON-RESPONSABILITÉ : Cette analyse est
-        générée à titre indicatif sur la base du droit suisse et de la jurisprudence actuelle. Elle
-        ne constitue pas un avis juridique formel. Consultez un avocat pour une validation officielle.
       </div>
     </motion.div>
   );
