@@ -8,18 +8,22 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "10mb" }));
 
-// Proxy /oj-api → Open Justice API (hides API key, bypasses CORS)
+// Proxy /oj-api → Open Justice API (bypasses CORS)
+// Auth header: prefer server-side env var, fall back to header forwarded from browser
 app.use("/oj-api", async (req, res) => {
-  const apiKey =
+  const serverKey =
     process.env.OPENJUSTICE_API_KEY ||
     process.env.VITE_OPENJUSTICE_API_KEY ||
     "";
+  const authHeader = serverKey
+    ? `Bearer ${serverKey}`
+    : (req.headers.authorization ?? "");
   try {
     const upstream = `https://api.openjustice.ai${req.path}`;
     const response = await fetch(upstream, {
       method: req.method,
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: authHeader,
         "Content-Type": "application/json",
       },
       body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
