@@ -13,88 +13,54 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 app.use(express.json({ limit: "10mb" }));
 
 const OJ_BASE = "https://api.openjustice.ai";
-const FLOW_ID =
-  process.env.OPENJUSTICE_FLOW_ID ||
-  process.env.VITE_OPENJUSTICE_FLOW_ID ||
-  "39be0734-55e5-4930-acc7-cc6f7c42bd52";
-const MODEL =
-  process.env.OPENJUSTICE_MODEL ||
-  process.env.VITE_OPENJUSTICE_MODEL ||
-  "claude-sonnet-4-5";
+const GPT_MODEL = process.env.GPT_MODEL || "gpt-5.4-nano";
+
+function ojKey() {
+  return process.env.OPENJUSTICE_API_KEY || process.env.VITE_OPENJUSTICE_API_KEY || "";
+}
 
 function ojHeaders() {
-  const key =
-    process.env.OPENJUSTICE_API_KEY ||
-    process.env.VITE_OPENJUSTICE_API_KEY ||
-    "";
-  return {
-    Authorization: `Bearer ${key}`,
-    "Content-Type": "application/json",
-  };
+  return { Authorization: `Bearer ${ojKey()}`, "Content-Type": "application/json" };
 }
 
-// Parse raw SSE text into [{event, data}]
-function parseSSE(raw) {
-  const events = [];
-  let ev = null, dt = null;
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event: ")) {
-      ev = line.slice(7).trim();
-    } else if (line.startsWith("data: ")) {
-      try { dt = JSON.parse(line.slice(6)); } catch { dt = {}; }
-    } else if (line.trim() === "" && ev) {
-      events.push({ event: ev, data: dt ?? {} });
-      ev = null; dt = null;
-    }
-  }
-  return events;
-}
+// Read SSE stream chunk-by-chunk, stop at "done" event
+async function collectSSEText(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  let buffer = "";
+  let currentEvent = null;
 
-// Pick the final analysis text out of SSE events
-function extractOpinion(events) {
-  for (const { event, data } of events) {
-    if (event === "message") {
-      if (data.error) throw new Error(data.error);
-      if (data.text) return data.text;
-    }
-    if (event === "node-result" && data.nodeConfig?.type === "reasoning") {
-      const out = data.nodeExecutionResults?.output;
-      if (out) {
-        try {
-          const p = JSON.parse(out);
-          return p.text || p.content || p.opinion || JSON.stringify(p, null, 2);
-        } catch { return out; }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+          if (currentEvent === "done") return output.trim();
+        } else if (line.startsWith("data: ") && currentEvent === "message") {
+          try {
+            const d = JSON.parse(line.slice(6));
+            if (d.error) throw new Error(d.error);
+            if (d.text) output += d.text;
+          } catch (e) {
+            if (e.message && !e.message.includes("JSON")) throw e;
+          }
+        } else if (line.trim() === "") {
+          currentEvent = null;
+        }
       }
     }
-  }
-  return null;
-}
-
-async function ojStream(conversationId, citationId, fileName, resumeExecutionId) {
-  const body = {
-    conversationId,
-    dialogFlowId: FLOW_ID,
-    model: MODEL,
-    resources: [{ id: citationId, name: fileName, source: "library" }],
-    isWebSearchEnabled: false,
-    ...(resumeExecutionId
-      ? { resumeExecutionId, message: "true" }
-      : { message: "Analyse ce contrat de travail." }),
-  };
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 90_000);
-  try {
-    const res = await fetch(`${OJ_BASE}/conversations/stream`, {
-      method: "POST",
-      headers: ojHeaders(),
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Stream ${res.status}: ${await res.text()}`);
-    return parseSSE(await res.text());
   } finally {
-    clearTimeout(t);
+    reader.cancel().catch(() => {});
   }
+  return output.trim();
 }
 
 // Parse a PDF server-side → return plain text
@@ -108,86 +74,72 @@ app.post("/api/extract-pdf", upload.single("file"), async (req, res) => {
   }
 });
 
-// Full Open Justice conversation flow → JSON opinion
+// Analyze a contract via Open Justice plain chat (no dialog flow)
 app.post("/api/analyze-contract", async (req, res) => {
   const { text, fileName = "contrat.txt" } = req.body;
   if (!text) return res.status(400).json({ error: "No text provided" });
+  if (!ojKey()) return res.status(500).json({ error: "Clé API Open Justice manquante." });
+
+  const prompt = `Tu es un juriste spécialisé en droit du travail suisse (CO, LTr, CCT).
+Analyse le contrat de travail ci-dessous et rédige un avis structuré en français couvrant :
+
+1. **Forme et validité** — mentions obligatoires présentes ou manquantes.
+2. **Durée** — déterminée ou indéterminée, période d'essai, délais de résiliation légaux vs contractuels (art. 335c CO).
+3. **Salaire et avantages** — conformité, 13e salaire, bonus.
+4. **Temps de travail** — durée hebdomadaire, heures supplémentaires, vacances (minimum légal : 4 semaines, art. 329a CO).
+5. **Clauses particulières** — non-concurrence, confidentialité, dédit-formation : validité et portée.
+6. **Points d'attention** — clauses défavorables ou manquements légaux.
+7. **Recommandations** — ce que l'employé devrait négocier ou clarifier avant de signer.
+
+--- CONTRAT (${fileName}) ---
+
+${text}
+
+--- FIN DU CONTRAT ---
+
+Rédige l'analyse complète maintenant.`;
 
   try {
-    // 1. Upload document text to file library
-    const citRes = await fetch(`${OJ_BASE}/file-library/citations/pasted`, {
-      method: "POST",
-      headers: ojHeaders(),
-      body: JSON.stringify({ fileName, textContent: text }),
-    });
-    if (!citRes.ok) throw new Error(`Citation upload: ${await citRes.text()}`);
-    const { id: citationId } = await citRes.json();
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 90_000);
 
-    // 2. Create conversation
-    const convRes = await fetch(`${OJ_BASE}/conversations`, {
-      method: "POST",
-      headers: ojHeaders(),
-      body: JSON.stringify({ dialogFlowId: FLOW_ID }),
-    });
-    if (!convRes.ok) throw new Error(`Conversation: ${await convRes.text()}`);
-    const { conversationId } = await convRes.json();
-
-    // 3. First stream pass
-    const events1 = await ojStream(conversationId, citationId, fileName);
-    const opinion1 = extractOpinion(events1);
-    if (opinion1) return res.json({ opinion: opinion1 });
-
-    // 4. Auto-resume if fact node asked for user input
-    const awaiting = events1.find((e) => e.event === "awaiting-user-input");
-    const started = events1.find((e) => e.event === "execution-started");
-    if (awaiting && started?.data?.executionId) {
-      const events2 = await ojStream(
-        conversationId,
-        citationId,
-        fileName,
-        started.data.executionId
-      );
-      const opinion2 = extractOpinion(events2);
-      if (opinion2) return res.json({ opinion: opinion2 });
+    let response;
+    try {
+      response = await fetch(`${OJ_BASE}/conversations/stream`, {
+        method: "POST",
+        headers: ojHeaders(),
+        body: JSON.stringify({ message: prompt, model: GPT_MODEL }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(t);
     }
 
-    throw new Error("Aucun résultat reçu du dialog flow.");
+    if (!response.ok) throw new Error(`OJ ${response.status}: ${await response.text()}`);
+
+    const opinion = await collectSSEText(response);
+    if (!opinion) throw new Error("Réponse vide reçue d'Open Justice.");
+
+    res.json({ opinion });
   } catch (err) {
     const msg = String(err);
-    const friendly = msg.includes("credit balance")
-      ? "Quota journalier Open Justice épuisé — les crédits se rechargent chaque jour. Réessayez dans quelques heures."
-      : msg.includes("aborted") || msg.includes("AbortError")
-      ? "L'analyse a pris trop de temps. Réessayez dans un instant."
+    const friendly = msg.includes("aborted") || msg.includes("AbortError")
+      ? "L'analyse a pris trop de temps. Réessayez."
       : msg.replace(/^Error: /, "");
     res.status(502).json({ error: friendly });
   }
 });
 
-// Proxy /oj-api → Open Justice API (for any direct browser calls)
+// Proxy /oj-api → Open Justice API (gardé pour usage futur)
 app.use("/oj-api", async (req, res) => {
-  const hdrs = ojHeaders();
   try {
-    const upstream = `${OJ_BASE}${req.path}`;
-    const response = await fetch(upstream, {
+    const response = await fetch(`${OJ_BASE}${req.path}`, {
       method: req.method,
-      headers: hdrs,
+      headers: ojHeaders(),
       body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
     });
-    const ct = response.headers.get("content-type") || "";
-    if (ct.includes("text/event-stream")) {
-      res.set("Content-Type", "text/event-stream");
-      res.set("Cache-Control", "no-cache");
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
-      }
-      res.end();
-    } else {
-      const text = await response.text();
-      res.status(response.status).type("json").send(text);
-    }
+    const text = await response.text();
+    res.status(response.status).type("json").send(text);
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }
