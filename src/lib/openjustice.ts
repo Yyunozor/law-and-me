@@ -4,28 +4,17 @@
  * Endpoint : POST /dialog-flow-executions/run
  * Auth     : Authorization: Bearer <nap_key>
  *
- * The dialog flow nodes use sourcePreference:"docs-only" — they read
- * from the `documents` array in the request body, not from messages.
+ * The dialog flow nodes use sourcePreference:"docs-only" — content must
+ * be in the `documents` array, not in messages.
  *
- * PDFs are parsed client-side with pdfjs-dist to extract clean text
- * before sending (FileReader.readAsText produces binary garbage).
+ * PDFs are parsed server-side via POST /api/extract-pdf (Express endpoint)
+ * to avoid browser worker issues with pdfjs-dist.
  *
- * In local dev, Vite proxies /oj-api → https://api.openjustice.ai.
- * In production, server.js proxies the same path with Express.
- *
- * Required env vars:
+ * Required env vars (baked in at Vite build time):
  *   VITE_OPENJUSTICE_API_KEY   → nap_...
  *   VITE_OPENJUSTICE_FLOW_ID   → UUID of your dialog flow (optional)
  *   VITE_OPENJUSTICE_MODEL     → optional, defaults to claude-sonnet-4-5
  */
-
-import * as pdfjsLib from "pdfjs-dist";
-
-// Point the worker at the bundled worker shipped with pdfjs-dist
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.mjs",
-  import.meta.url
-).toString();
 
 const API_KEY = import.meta.env.VITE_OPENJUSTICE_API_KEY as string;
 const FLOW_ID =
@@ -34,7 +23,8 @@ const FLOW_ID =
 const MODEL =
   (import.meta.env.VITE_OPENJUSTICE_MODEL as string) || "claude-sonnet-4-5";
 
-const ENDPOINT = "/oj-api/dialog-flow-executions/run";
+const OJ_ENDPOINT = "/oj-api/dialog-flow-executions/run";
+const PDF_ENDPOINT = "/api/extract-pdf";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,20 +40,18 @@ export interface AnalysisResult {
   raw?: unknown;
 }
 
-// ─── PDF extraction ───────────────────────────────────────────────────────────
+// ─── PDF extraction (server-side) ────────────────────────────────────────────
 
 async function extractPdfText(file: File): Promise<string> {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const pages: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pageText = textContent.items.map((item: any) => item.str).join(" ");
-    pages.push(pageText);
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(PDF_ENDPOINT, { method: "POST", body: form });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(`PDF parsing failed: ${err.error}`);
   }
-  return pages.join("\n\n");
+  const { text } = await res.json();
+  return text as string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -76,13 +64,13 @@ function headers(): HeadersInit {
 }
 
 function buildBody(
-  content: string,
+  message: string,
   documents: Array<{ name: string; content: string }>
 ): string {
   return JSON.stringify({
     dialogFlowId: FLOW_ID,
     model: MODEL,
-    messages: [{ content }],
+    messages: [{ content: message }],
     documents,
   });
 }
@@ -110,7 +98,7 @@ async function handleResponse(res: Response): Promise<AnalysisResult> {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function analyzeContractText(contractText: string): Promise<AnalysisResult> {
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(OJ_ENDPOINT, {
     method: "POST",
     headers: headers(),
     body: buildBody(
@@ -123,7 +111,7 @@ export async function analyzeContractText(contractText: string): Promise<Analysi
 
 export async function analyzeContractFile(file: File): Promise<AnalysisResult> {
   const text = await extractPdfText(file);
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(OJ_ENDPOINT, {
     method: "POST",
     headers: headers(),
     body: buildBody(

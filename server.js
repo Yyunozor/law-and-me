@@ -1,12 +1,27 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import multer from "multer";
+import { extractText } from "unpdf";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 app.use(express.json({ limit: "10mb" }));
+
+// Parse a PDF server-side → return plain text
+app.post("/api/extract-pdf", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  try {
+    const { text } = await extractText(new Uint8Array(req.file.buffer));
+    res.json({ text: Array.isArray(text) ? text.join("\n\n") : text });
+  } catch (err) {
+    res.status(422).json({ error: String(err) });
+  }
+});
 
 // Proxy /oj-api → Open Justice API (bypasses CORS)
 // Auth header: prefer server-side env var, fall back to header forwarded from browser
