@@ -13,8 +13,8 @@
 const API_KEY = import.meta.env.VITE_OPENJUSTICE_API_KEY as string;
 const API_BASE = (import.meta.env.VITE_OPENJUSTICE_API_URL as string) || "https://openjustice.ai/api/v1";
 
-// Nom exact du flow tel qu'il apparaît sur la plateforme Open Justice
-const FLOW_NAME = "Projet (Ne pas modifier)";
+// Nom exact du flow tel qu'il apparaît dans ton compte Open Justice
+const FLOW_NAME = "Projet + rapide v2 (Imported)";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
